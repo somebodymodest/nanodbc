@@ -725,6 +725,7 @@ public:
     /// \throws database_error
     template <class T>
     void bind(short param_index, T const* value, param_direction direction = PARAM_IN);
+	void bind(short param_index, std::vector<uint8_t>& value, param_direction direction = PARAM_IN);
 
     /// \addtogroup bind_multi Binding multiple non-string values
     /// \brief Binds given values to given parameter placeholder number in the prepared statement.

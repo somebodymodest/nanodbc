@@ -1856,6 +1856,52 @@ public:
         bind_parameter(param, buffer);
     }
 
+	void bind(
+		param_direction direction,
+		short param_index,
+		std::vector<uint8_t>& value,
+		bool const* nulls = nullptr,
+		uint8_t const* null_sentry = nullptr)
+	{
+		std::size_t batch_size = 1;
+		bound_parameter param;
+		prepare_bind(param_index, batch_size, direction, param);
+
+		value.resize(param.size_);
+
+		size_t max_length = 0;
+		for (std::size_t i = 0; i < batch_size; ++i)
+		{
+			max_length = std::max(value.size(), max_length);
+		}
+
+		if (null_sentry)
+		{
+			for (std::size_t i = 0; i < batch_size; ++i)
+				if (!std::equal(value.begin(), value.end(), null_sentry))
+				{
+					bind_len_or_null_[param_index][i] = value.size();
+				}
+		}
+		else if (nulls)
+		{
+			for (std::size_t i = 0; i < batch_size; ++i)
+			{
+				if (!nulls[i])
+					bind_len_or_null_[param_index][i] = value.size(); // null terminated
+			}
+		}
+		else
+		{
+			for (std::size_t i = 0; i < batch_size; ++i)
+			{
+				bind_len_or_null_[param_index][i] = value.size();
+			}
+		}
+		bound_buffer<uint8_t> buffer(value.data(), batch_size, max_length);
+		bind_parameter(param, buffer);
+	}
+
     void bind_strings(
         param_direction direction,
         short param_index,
@@ -3829,6 +3875,11 @@ template <class T>
 void statement::bind(short param_index, const T* value, param_direction direction)
 {
     impl_->bind(direction, param_index, value, 1);
+}
+
+void statement::bind(short param_index, std::vector<uint8_t>& value, param_direction direction)
+{
+	impl_->bind(direction, param_index, value);
 }
 
 template <class T>
