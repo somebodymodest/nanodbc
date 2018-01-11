@@ -93,6 +93,16 @@
 #define SQL_NVARCHAR (-10)
 #endif
 
+// SQL_SS_LENGTH_UNLIMITED is used to describe the max length of
+// VARCHAR(max), VARBINARY(max), NVARCHAR(max), and XML columns
+#ifndef SQL_SS_LENGTH_UNLIMITED
+#define SQL_SS_LENGTH_UNLIMITED (0)
+#endif
+
+// Max length of DBVARBINARY and DBVARCHAR, etc. +1 for zero byte
+// MSDN: Large value data types are those that exceed the maximum row size of 8 KB
+#define SQLSERVER_DBMAXCHAR (8000 + 1)
+
 // Default to ODBC version defined by NANODBC_ODBC_VERSION if provided.
 #ifndef NANODBC_ODBC_VERSION
 #ifdef SQL_OV_ODBC3_80
@@ -1777,7 +1787,25 @@ public:
     template <class T, typename std::enable_if<!is_character<T>::value, int>::type = 0>
     void bind_parameter(bound_parameter const& param, bound_buffer<T>& buffer)
     {
-        auto const buffer_size = buffer.value_size_ > 0 ? buffer.value_size_ : param.size_;
+        NANODBC_ASSERT(buffer.value_size_ > 0 || param.size_ > 0);
+
+        auto value_size{buffer.value_size_};
+        if (value_size == 0)
+            value_size = param.size_;
+
+        auto param_size{param.size_};
+        if (value_size > param_size)
+        {
+            // Parameter size reported by SQLDescribeParam for Large Objects:
+            // - For SQL VARBINARY(MAX), it is Zero which actually means SQL_SS_LENGTH_UNLIMITED.
+            // - For SQL UDT (eg. GEOMETRY), it may be driver-specific max limit (eg. SQL Server is
+            // DBMAXCHAR=8000 bytes).
+            // See MSDN for details
+            // https://docs.microsoft.com/en-us/sql/relational-databases/native-client/odbc/large-clr-user-defined-types-odbc
+            //
+            // If bound value is larger than parameter size, we force SQL_SS_LENGTH_UNLIMITED.
+            param_size = SQL_SS_LENGTH_UNLIMITED;
+        }
 
         RETCODE rc;
         NANODBC_CALL_RC(
@@ -1788,10 +1816,10 @@ public:
             param.iotype_,       // input or output type
             sql_ctype<T>::value, // value type
             param.type_,         // parameter type
-            param.size_,         // column size ignored for many types, but needed for strings
+            param_size,          // column size ignored for many types, but needed for strings
             param.scale_,        // decimal digits
             (SQLPOINTER)buffer.values_, // parameter value
-            buffer_size,                // buffer length
+            value_size,          // buffer length
             bind_len_or_null_[param.index_].data());
 
         if (!success(rc))
@@ -2574,11 +2602,17 @@ public:
     }
 
 private:
-    template <class T>
+    template <class T, typename std::enable_if<!is_string<T>::value, int>::type = 0>
     void get_ref_impl(short column, T& result) const;
 
     template <class T, typename std::enable_if<is_string<T>::value, int>::type = 0>
-    void get_ref_impl(short column, std::basic_string<typename T::value_type>& result) const;
+    void get_ref_impl(short column, T& result) const;
+
+    template <class T, typename std::enable_if<!is_character<T>::value, int>::type = 0>
+    void get_ref_from_string_column(short column, T& result) const;
+
+    template <class T, typename std::enable_if<is_character<T>::value, int>::type = 0>
+    void get_ref_from_string_column(short column, T& result) const;
 
     void before_move() NANODBC_NOEXCEPT
     {
@@ -2898,9 +2932,7 @@ inline void result::result_impl::get_ref_impl<timestamp>(short column, timestamp
 }
 
 template <class T, typename std::enable_if<is_string<T>::value, int>::type>
-inline void result::result_impl::get_ref_impl(
-    short column,
-    std::basic_string<typename T::value_type>& result) const
+inline void result::result_impl::get_ref_impl(short column, T& result) const
 {
     bound_column& col = bound_columns_[column];
     const SQLULEN column_size = col.sqlsize_;
@@ -3241,7 +3273,75 @@ inline void result::result_impl::get_ref_impl<std::vector<std::uint8_t>>(
     throw type_incompatible_error();
 }
 
-template <class T>
+namespace detail
+{
+auto from_string(std::string const& s, float)
+{
+    return std::stof(s);
+}
+
+auto from_string(std::string const& s, double)
+{
+    return std::stod(s);
+}
+
+auto from_string(std::string const& s, long long)
+{
+    return std::stoll(s);
+}
+
+auto from_string(std::string const& s, unsigned long long)
+{
+    return std::stoull(s);
+}
+
+template <typename R, typename std::enable_if<std::is_integral<R>::value, int>::type = 0>
+auto from_string(std::string const& s, R)
+{
+    auto integer = from_string(
+        s,
+        typename std::conditional<std::is_signed<R>::value, long long, unsigned long long>::type{});
+    if (integer > std::numeric_limits<R>::max() || integer < std::numeric_limits<R>::min())
+        throw std::range_error("from_string argument out of range");
+    return static_cast<R>(integer);
+}
+}
+
+template <typename R>
+auto from_string(std::string const& s) -> R
+{
+    return detail::from_string(s, R{});
+}
+
+template <class T, typename std::enable_if<is_character<T>::value, int>::type>
+void result::result_impl::get_ref_from_string_column(short column, T& result) const
+{
+    bound_column& col = bound_columns_[column];
+    const char* s = col.pdata_ + rowset_position_ * col.clen_;
+    switch (col.ctype_)
+    {
+    case SQL_C_CHAR:
+        result = static_cast<T>(*static_cast<const char*>(s));
+        return;
+    case SQL_C_WCHAR:
+        result = static_cast<T>(*reinterpret_cast<const SQLWCHAR*>(s));
+        return;
+    }
+    throw type_incompatible_error();
+}
+
+template <class T, typename std::enable_if<!is_character<T>::value, int>::type>
+void result::result_impl::get_ref_from_string_column(short column, T& result) const
+{
+    bound_column& col = bound_columns_[column];
+    if (col.ctype_ != SQL_C_CHAR && col.ctype_ != SQL_C_WCHAR)
+        throw type_incompatible_error();
+    std::string str;
+    get_ref_impl(col.column_, str);
+    result = from_string<T>(str);
+}
+
+template <class T, typename std::enable_if<!is_string<T>::value, int>::type>
 void result::result_impl::get_ref_impl(short column, T& result) const
 {
     bound_column& col = bound_columns_[column];
@@ -3250,7 +3350,8 @@ void result::result_impl::get_ref_impl(short column, T& result) const
     switch (col.ctype_)
     {
     case SQL_C_CHAR:
-        result = (T) * (char*)(s);
+    case SQL_C_WCHAR:
+        get_ref_from_string_column(column, result);
         return;
     case SQL_C_SSHORT:
         result = (T) * (short*)(s);
