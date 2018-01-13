@@ -169,6 +169,8 @@ typedef std::u16string wide_string;
 
 typedef wide_string::value_type wide_char_t;
 
+typedef std::uint8_t byte_t;
+
 #if defined(_WIN64)
 // LLP64 machine: Windows
 typedef std::int64_t null_type;

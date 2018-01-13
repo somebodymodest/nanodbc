@@ -534,9 +534,25 @@ struct sql_ctype
 };
 
 template <>
-struct sql_ctype<uint8_t>
+struct sql_ctype<nanodbc::byte_t>
 {
     static const SQLSMALLINT value = SQL_C_BINARY;
+};
+
+template <typename T>
+struct sql_ctype<
+	T,
+	typename std::enable_if<is_integral8<T>::value && std::is_signed<T>::value>::type>
+{
+	static const SQLSMALLINT value = SQL_C_STINYINT;
+};
+
+template <typename T>
+struct sql_ctype<
+	T,
+	typename std::enable_if<is_integral8<T>::value && std::is_unsigned<T>::value>::type>
+{
+	static const SQLSMALLINT value = SQL_C_UTINYINT;
 };
 
 template <typename T>
@@ -1910,7 +1926,7 @@ public:
                 bind_len_or_null_[param_index][i] = values[i].size();
             }
         }
-        bound_buffer<uint8_t> buffer(binary_data_[param_index].data(), batch_size, max_length);
+        bound_buffer<nanodbc::byte_t> buffer(binary_data_[param_index].data(), batch_size, max_length);
         bind_parameter(param, buffer);
     }
 
@@ -1956,7 +1972,7 @@ public:
 				bind_len_or_null_[param_index][i] = value.size();
 			}
 		}
-		bound_buffer<uint8_t> buffer(value.data(), batch_size, max_length);
+		bound_buffer<nanodbc::byte_t> buffer(value.data(), batch_size, max_length);
 		bind_parameter(param, buffer);
 	}
 
@@ -3275,28 +3291,28 @@ inline void result::result_impl::get_ref_impl<std::vector<std::uint8_t>>(
 
 namespace detail
 {
-auto from_string(std::string const& s, float)
+auto from_string(std::string const& s, float) -> float
 {
     return std::stof(s);
 }
 
-auto from_string(std::string const& s, double)
+auto from_string(std::string const& s, double) -> double
 {
     return std::stod(s);
 }
 
-auto from_string(std::string const& s, long long)
+auto from_string(std::string const& s, long long) -> long long 
 {
     return std::stoll(s);
 }
 
-auto from_string(std::string const& s, unsigned long long)
+auto from_string(std::string const& s, unsigned long long) -> unsigned long long
 {
     return std::stoull(s);
 }
 
 template <typename R, typename std::enable_if<std::is_integral<R>::value, int>::type = 0>
-auto from_string(std::string const& s, R)
+auto from_string(std::string const& s, R) -> R
 {
     auto integer = from_string(
         s,
@@ -4009,6 +4025,8 @@ unsigned long statement::parameter_size(short param_index) const
 // The following are the only supported instantiations of statement::bind().
 NANODBC_INSTANTIATE_BINDS(std::string::value_type);
 NANODBC_INSTANTIATE_BINDS(wide_string::value_type);
+NANODBC_INSTANTIATE_BINDS(signed char);
+NANODBC_INSTANTIATE_BINDS(unsigned char);
 NANODBC_INSTANTIATE_BINDS(short);
 NANODBC_INSTANTIATE_BINDS(unsigned short);
 NANODBC_INSTANTIATE_BINDS(int);
